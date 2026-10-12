@@ -1,0 +1,17 @@
+[Unit]
+Description=Codial referal Telegram boti
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Serveringizdagi loyiha yo‘liga almashtiring.
+WorkingDirectory=/home/abz/Desktop/codial_refelal
+ExecStart=/home/abz/Desktop/codial_refelal/venv/bin/python /home/abz/Desktop/codial_refelal/bot.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -28,27 +28,32 @@ CREATE TABLE IF NOT EXISTS channels (
 
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=30) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(SCHEMA)
+        await db.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_users_group_vote ON users(group_id, voted);
+            CREATE INDEX IF NOT EXISTS idx_users_referrer_vote ON users(referrer_id, voted);
+        """)
         await db.commit()
 
 
 async def _fetchone(query, params=()):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(query, params) as cur:
             return await cur.fetchone()
 
 
 async def _fetchall(query, params=()):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(query, params) as cur:
             return await cur.fetchall()
 
 
 async def _execute(query, params=()):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=30) as db:
         cur = await db.execute(query, params)
         await db.commit()
         return cur.lastrowid
@@ -77,11 +82,12 @@ async def update_user_info(user_id, full_name, username):
 
 async def set_vote(user_id, group_id):
     """Foydalanuvchi ovozini guruhga yozadi. Agar allaqachon ovoz bergan bo'lsa False."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=30) as db:
         cur = await db.execute(
             "UPDATE users SET group_id = ?, voted = 1, pending_group_id = NULL "
-            "WHERE id = ? AND voted = 0",
-            (group_id, user_id),
+            "WHERE id = ? AND voted = 0 AND EXISTS (SELECT 1 FROM groups WHERE id = ?) "
+            "AND (pending_group_id IS NULL OR pending_group_id = ?)",
+            (group_id, user_id, group_id, group_id),
         )
         await db.commit()
         return cur.rowcount > 0
@@ -155,7 +161,7 @@ async def group_votes(group_id):
 
 
 async def delete_group(group_id):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=30) as db:
         # Guruh o'chsa, uning ovozchilari qaytadan ovoz bera oladi
         await db.execute(
             "UPDATE users SET group_id = NULL, voted = 0 WHERE group_id = ?", (group_id,)
@@ -171,7 +177,8 @@ async def delete_group(group_id):
 
 async def add_channel(chat_id, title, link):
     await _execute(
-        "INSERT OR REPLACE INTO channels (chat_id, title, link) VALUES (?, ?, ?)",
+        "INSERT INTO channels (chat_id, title, link) VALUES (?, ?, ?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title, link = excluded.link",
         (chat_id, title, link),
     )
 
@@ -187,7 +194,7 @@ async def delete_channel(channel_id):
 async def unvote(user_id):
     """Kanaldan chiqqan foydalanuvchi ovozini olib tashlaydi.
     Guruh pending_group_id ga saqlanadi — qayta a'zo bo'lsa ovoz o'sha guruhga qaytadi."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH, timeout=30) as db:
         cur = await db.execute(
             "UPDATE users SET voted = 0, pending_group_id = group_id, group_id = NULL "
             "WHERE id = ? AND voted = 1",

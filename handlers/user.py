@@ -1,12 +1,13 @@
 import html
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import CommandObject, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 import database as db
 import keyboards as kb
-from utils import not_subscribed_channels, ref_link, revoke_vote, user_mention
+from utils import not_subscribed_channels, ref_link, revoke_vote, user_mention, answer_lines
 
 router = Router()
 
@@ -14,7 +15,7 @@ router = Router()
 def parse_payload(payload: str | None, user_id: int):
     """start payload: r<user_id> — referal, g<group_id> — guruh linki."""
     referrer_id = group_id = None
-    if payload and payload[1:].isdigit():
+    if payload and len(payload) <= 20 and payload[1:].isascii() and payload[1:].isdigit() and 0 < int(payload[1:]) <= 9223372036854775807:
         if payload[0] == "r" and int(payload[1:]) != user_id:
             referrer_id = int(payload[1:])
         elif payload[0] == "g":
@@ -47,8 +48,11 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
 
 async def proceed(message: Message, bot: Bot, user_id: int):
     """Shartlar -> ovoz berish -> asosiy menyu."""
-    missing = await not_subscribed_channels(bot, user_id)
     user = await db.get_user(user_id)
+    if user is None:
+        await message.answer("Avval /start buyrug‘ini yuboring.")
+        return
+    missing = await not_subscribed_channels(bot, user_id)
 
     if user["voted"]:
         if not missing:
@@ -90,7 +94,11 @@ async def proceed(message: Message, bot: Bot, user_id: int):
 
 async def cast_vote(message: Message, bot: Bot, user_id: int, group):
     if not await db.set_vote(user_id, group["id"]):
-        await show_main(message, bot, user_id)
+        current = await db.get_user(user_id)
+        if current and current["voted"]:
+            await show_main(message, bot, user_id)
+        else:
+            await proceed(message, bot, user_id)
         return
 
     await message.answer(
@@ -106,7 +114,7 @@ async def cast_vote(message: Message, bot: Bot, user_id: int, group):
                 f"🎉 Sizning linkingiz orqali {user_mention(user)} ovoz berdi!\n"
                 f"Jami taklif qilganlaringiz: <b>{refs}</b>",
             )
-        except Exception:
+        except TelegramAPIError:
             pass
 
     await show_main(message, bot, user_id)
@@ -114,7 +122,13 @@ async def cast_vote(message: Message, bot: Bot, user_id: int, group):
 
 async def show_main(message: Message, bot: Bot, user_id: int):
     user = await db.get_user(user_id)
+    if user is None or not user["voted"]:
+        await proceed(message, bot, user_id)
+        return
     group = await db.get_group(user["group_id"])
+    if group is None:
+        await proceed(message, bot, user_id)
+        return
     link = await ref_link(bot, user_id)
     await message.answer(
         f"Siz <b>{html.escape(group['name'])}</b> guruhi tarafdorisiz.\n\n"
@@ -129,7 +143,7 @@ async def check_sub(call: CallbackQuery, bot: Bot):
     if await not_subscribed_channels(bot, call.from_user.id):
         await call.answer("❗ Siz hali barcha kanallarga a'zo bo'lmadingiz", show_alert=True)
         return
-    await call.message.delete()
+    await call.answer("✅ Tekshirildi")
     await proceed(call.message, bot, call.from_user.id)
 
 
@@ -145,7 +159,8 @@ async def vote(call: CallbackQuery, callback_data: kb.VoteCB, bot: Bot):
 
     missing = await not_subscribed_channels(bot, call.from_user.id)
     if missing:
-        await call.message.edit_text(
+        await call.answer("Avval kanallarga a’zo bo‘ling")
+        await call.message.answer(
             "Avval kanallarga a'zo bo'ling:", reply_markup=kb.subscribe_kb(missing)
         )
         return
@@ -155,7 +170,13 @@ async def vote(call: CallbackQuery, callback_data: kb.VoteCB, bot: Bot):
         await call.answer("Bu guruh o'chirilgan", show_alert=True)
         return
 
-    await call.message.delete()
+    # Avvalgi tugma majburiy guruhni o‘zgartirib yubormasligi kerak.
+    referrer = await db.get_user(user["referrer_id"]) if user["referrer_id"] else None
+    if user["pending_group_id"] or (referrer and referrer["voted"]):
+        await call.answer()
+        await proceed(call.message, bot, call.from_user.id)
+        return
+    await call.answer("Ovoz qabul qilinmoqda")
     await cast_vote(call.message, bot, call.from_user.id, group)
 
 
@@ -184,7 +205,7 @@ async def rating(message: Message):
     for i, g in enumerate(rows):
         place = medals[i] if i < 3 else f"{i + 1}."
         lines.append(f"{place} {html.escape(g['name'])} — <b>{g['votes']}</b> ovoz")
-    await message.answer("\n".join(lines))
+    await answer_lines(message, lines)
 
 
 @router.message(F.text == kb.BTN_PROFILE)
@@ -194,6 +215,9 @@ async def profile(message: Message, bot: Bot):
         await proceed(message, bot, message.from_user.id)
         return
     group = await db.get_group(user["group_id"])
+    if group is None:
+        await proceed(message, bot, user["id"])
+        return
     refs = await db.referral_count(user["id"])
     votes = await db.group_votes(user["group_id"])
     await message.answer(
@@ -202,3 +226,8 @@ async def profile(message: Message, bot: Bot):
         f"Guruh: <b>{html.escape(group['name'])}</b> ({votes} ovoz)\n"
         f"Taklif qilganlaringiz: <b>{refs}</b>"
     )
+
+
+@router.message()
+async def unknown_message(message: Message):
+    await message.answer("Boshlash uchun /start yuboring yoki menyudagi tugmalardan foydalaning.")

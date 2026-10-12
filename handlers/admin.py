@@ -1,5 +1,9 @@
 import asyncio
 import html
+import logging
+
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
+from aiogram.enums import ChatType, ChatMemberStatus
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandStart
@@ -10,7 +14,7 @@ from aiogram.types import CallbackQuery, Message
 import database as db
 import keyboards as kb
 from config import ADMIN_IDS
-from utils import group_link, user_mention
+from utils import group_link, user_mention, answer_lines
 
 router = Router()
 router.message.filter(F.from_user.id.in_(ADMIN_IDS))
@@ -30,6 +34,7 @@ async def admin_start(message: Message, state: FSMContext):
     await message.answer("👑 Admin panel", reply_markup=kb.admin_menu)
 
 
+@router.message(Command("cancel"))
 @router.message(F.text == kb.BTN_CANCEL)
 async def cancel(message: Message, state: FSMContext):
     await state.clear()
@@ -46,7 +51,10 @@ async def add_group_start(message: Message, state: FSMContext):
 
 @router.message(AdminStates.group_name, F.text)
 async def add_group_finish(message: Message, state: FSMContext, bot: Bot):
-    name = message.text.strip()[:64]
+    name = message.text.strip()
+    if not name or len(name) > 64:
+        await message.answer("Guruh nomi 1 dan 64 tagacha belgidan iborat bo‘lsin.")
+        return
     group_id = await db.add_group(name)
     await state.clear()
     link = await group_link(bot, group_id)
@@ -119,20 +127,31 @@ async def add_channel_start(message: Message, state: FSMContext):
 @router.message(AdminStates.channel, F.text)
 async def add_channel_finish(message: Message, state: FSMContext, bot: Bot):
     raw = message.text.strip()
-    chat_ref = int(raw) if raw.lstrip("-").isdigit() else raw
     try:
+        chat_ref = int(raw) if raw.lstrip("-").isascii() and raw.lstrip("-").isdigit() else raw
         chat = await bot.get_chat(chat_ref)
+        if chat.type != ChatType.CHANNEL:
+            raise ValueError("Faqat Telegram kanalini qo‘shish mumkin.")
         me = await bot.get_me()
         member = await bot.get_chat_member(chat.id, me.id)
-        if member.status != "administrator":
-            raise ValueError("bot admin emas")
+        if member.status not in {ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR}:
+            raise ValueError("Bot kanalda admin emas. Avval botni kanalga admin qiling.")
         link = (
             f"https://t.me/{chat.username}"
             if chat.username
             else chat.invite_link or (await bot.create_chat_invite_link(chat.id)).invite_link
         )
-    except Exception as e:
-        await message.answer(f"❌ Xato: {html.escape(str(e))}\nQaytadan yuboring yoki bekor qiling.")
+    except (TelegramAPIError, ValueError) as exc:
+        logging.warning("Kanal qo‘shish amalga oshmadi: %s", type(exc).__name__)
+        if isinstance(exc, ValueError):
+            reason = str(exc)
+        elif isinstance(exc, TelegramForbiddenError):
+            reason = "Bot kanalga kira olmayapti. Uni kanalga admin qilib qo‘shing."
+        elif isinstance(exc, TelegramBadRequest):
+            reason = "Kanal topilmadi yoki botning ruxsati yetarli emas. Kanal ID/username va taklif havolasi yaratish huquqini tekshiring."
+        else:
+            reason = "Telegram bilan aloqa vaqtincha ishlamayapti. Birozdan so‘ng qayta urinib ko‘ring."
+        await message.answer(f"❌ {html.escape(reason)}\nQaytadan yuboring yoki bekor qiling.")
         return
 
     await db.add_channel(chat.id, chat.title, link)
@@ -179,7 +198,7 @@ async def stats(message: Message):
         "",
     ]
     lines += [f"{i}. {html.escape(g['name'])} — {g['votes']}" for i, g in enumerate(rows, 1)]
-    await message.answer("\n".join(lines))
+    await answer_lines(message, lines)
 
 
 @router.message(F.text == kb.BTN_BROADCAST)
@@ -200,7 +219,13 @@ async def broadcast_send(message: Message, state: FSMContext):
         try:
             await message.copy_to(user_id)
             sent += 1
-        except Exception:
+        except TelegramAPIError:
             failed += 1
         await asyncio.sleep(0.05)  # Telegram limitlaridan oshmaslik uchun
     await message.answer(f"✅ Yuborildi: {sent}\n❌ Xato: {failed}")
+
+
+@router.message(AdminStates.group_name)
+@router.message(AdminStates.channel)
+async def require_text(message: Message):
+    await message.answer("Iltimos, matn yuboring yoki ❌ Bekor qilish tugmasini bosing.")

@@ -25,3 +25,29 @@ cp .env.example .env   # BOT_TOKEN va ADMIN_IDS ni yozing
 - Kamida 1 ta majburiy kanal bo'lsa, kanallar tagida doim **📸 Instagram** linki chiqadi (`.env` dagi `INSTAGRAM_URL`).
 - Majburiy kanaldan chiqib ketgan odamning ovozi **-1** bo'ladi; unga va uni taklif qilgan odamga xabar boradi.
   Qayta a'zo bo'lib `/start` bossa, ovozi o'sha guruhga qaytadi.
+
+## Barqaror ishlash va tekshirish
+- Xatolar foydalanuvchiga o‘zbekcha ko‘rsatiladi; texnik tafsilotlar logda qoladi.
+- Telegram obunani tekshira olmaganida mavjud ovoz bekor qilinmaydi.
+- Bir foydalanuvchining parallel so‘rovlari ketma-ket ishlanadi; takroriy ovoz bazada bloklanadi.
+- Telegram tezlik limitida so‘rov qayta yuboriladi. Aloqa uzilsa polling qayta ulanadi.
+- Bot qayta ishga tushganda kutilayotgan Telegram yangilanishlari o‘chirilmaydi.
+- Adminning tugallanmagan kiritish holati xotirada saqlanadi; restartdan keyin amalni qayta boshlang.
+- Bir token bilan faqat bitta bot jarayonini ishga tushiring.
+
+Testlar haqiqiy `bot.db` o‘rniga vaqtinchalik bazada ishlaydi:
+```bash
+./venv/bin/python -m unittest discover -s tests -v
+```
+
+Kompyuter yoki server yoqilgan paytda bot jarayoni kutilmaganda to‘xtasa avtomatik qayta ishga tushirish uchun `deploy/referral-bot.service` namunasi bor. Fayldagi loyiha va Python yo‘llarini serverga moslang, keyin Linux foydalanuvchi xizmati sifatida o‘rnating:
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/referral-bot.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now referral-bot
+journalctl --user -u referral-bot -f
+```
+Bu xizmat hozircha avtomatik o‘rnatilmagan. Doimiy ishlash uchun server doim yoqilgan, interneti faol bo‘lishi va foydalanuvchi systemd menejeri ishlashi kerak. Elektr, internet yoki Telegram uzilishlari paytida uzluksiz xizmatni kafolatlab bo‘lmaydi.
+
+`.env` va `bot.db` maxfiy ma’lumot hisoblanadi. `.gitignore` yangi fayllarni Gitga qo‘shishdan saqlaydi, lekin avval kuzatuvga olingan fayllarni Git tarixidan olib tashlamaydi. Avval repozitoriyga tushgan bot tokenini BotFather orqali yangilang. Haqiqiy tokenni `.env.example` ichiga yozmang.
